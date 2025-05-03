@@ -1,0 +1,206 @@
+#include <WiFi.h>
+#include <ESPAsyncWebServer.h>
+#include <Arduino.h>
+
+#define LIGHT_PIN 12
+#define PIR_PIN 14
+#define LDR_PIN 34
+
+int pwmValue = 0;                
+AsyncWebServer server(80); 
+
+bool lightState = false;
+String mode = "Auto";
+
+void autoMode() {
+  int motion = digitalRead(PIR_PIN);
+  int lightLevel = analogRead(LDR_PIN);
+  int threshold = 2000;
+
+  if (motion == HIGH && lightLevel < threshold) {
+    Serial.println("on");
+    analogWrite(LIGHT_PIN, 255);
+    delay(2000);
+    lightState = true;
+  } else {
+    analogWrite(LIGHT_PIN, 0);
+    lightState = false;
+  }
+
+  delay(200);
+}
+
+void manualMode() {
+  Serial.println(pwmValue);
+  analogWrite(LIGHT_PIN, pwmValue);
+  lightState = (pwmValue > 0);
+}
+
+void setup() {
+  Serial.begin(9600);
+  pinMode(LIGHT_PIN, OUTPUT);
+  pinMode(PIR_PIN, INPUT);
+  pinMode(LDR_PIN, INPUT);
+
+  // Режим точки доступа (Access Point)
+  WiFi.softAP("BrightSense_AP", "yryszhan123");
+  IPAddress IP = WiFi.softAPIP();
+  Serial.print("Access Point IP: ");
+  Serial.println(IP);
+
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
+    String html = R"rawliteral(
+      <!DOCTYPE html> 
+      <html>
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>BrightSense</title>
+        <style>
+          body {
+            font-family: Arial, sans-serif;
+            background-color: #121212;
+            color: #ffffff;
+            text-align: center;
+            padding: 20px;
+          }
+          h1 {
+            color: #33b8ff;
+          }
+          .status {
+            margin: 15px 0;
+            font-size: 20px;
+          }
+          .slider {
+            width: 90%;
+            margin: 20px auto;
+          }
+          input[type=range] {
+            width: 100%;
+            height: 25px;
+            appearance: none;
+            background: #444;
+            border-radius: 12px;
+            outline: none;
+          }
+          input[type=range]::-webkit-slider-thumb {
+            appearance: none;
+            height: 35px;
+            width: 35px;
+            border-radius: 50%;
+            background: #33b8ff;
+            cursor: pointer;
+            margin-top: -5px;
+          }
+          input[type=range]::-moz-range-thumb {
+            height: 35px;
+            width: 35px;
+            border-radius: 50%;
+            background: #33b8ff;
+            cursor: pointer;
+          }
+          label {
+            font-size: 18px;
+            color: #ccc;
+          }
+          button {
+            background-color: #33b8ff;
+            border: none;
+            color: #fff;
+            padding: 14px 28px;
+            margin: 10px;
+            border-radius: 8px;
+            font-size: 18px;
+            cursor: pointer;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+            transition: 0.2s;
+          }
+          button:hover {
+            background-color: #1fa2e1;
+          }
+        </style>
+      </head>
+      <body>
+        <h1>BrightSense</h1>
+        <div class="status">
+          <p>Mode: <span id="mode">---</span></p>
+          <p>Light: <span id="light">---</span></p>
+        </div>
+        <div class="slider">
+          <label for="pwmSlider">Brightness</label><br>
+          <input type="range" min="0" max="255" value="0" id="pwmSlider" onchange="updatePWM()">
+        </div>
+        <button onclick="toggleLight()">Toggle Light</button>
+        <button onclick="toggleMode()">Toggle Mode</button>
+
+        <script>
+          function updatePWM() {
+            var pwm = document.getElementById('pwmSlider').value;
+            fetch('/setPWM?pwm=' + pwm);
+          }
+
+          function toggleLight() {
+            fetch('/toggleLight');
+          }
+
+          function toggleMode() {
+            fetch('/toggleMode');
+          }
+
+          function refreshStatus() {
+            fetch('/status')
+              .then(response => response.json())
+              .then(data => {
+                document.getElementById('mode').innerText = data.mode;
+                document.getElementById('light').innerText = data.light ? "ON" : "OFF";
+                document.getElementById('pwmSlider').value = data.pwm;
+              });
+          }
+
+          setInterval(refreshStatus, 1000);
+          window.onload = refreshStatus;
+        </script>
+      </body>
+      </html>
+    )rawliteral";
+    request->send(200, "text/html", html);
+  });
+
+  server.on("/setPWM", HTTP_GET, [](AsyncWebServerRequest *request){
+    if (request->hasParam("pwm")) {
+      pwmValue = request->getParam("pwm")->value().toInt();
+    }
+    request->send(200, "text/plain", "PWM updated");
+  });
+
+  server.on("/toggleLight", HTTP_GET, [](AsyncWebServerRequest *request){
+    lightState = !lightState;
+    pwmValue = lightState ? 255 : 0;
+    analogWrite(LIGHT_PIN, pwmValue);
+    request->send(200, "text/plain", lightState ? "Light ON" : "Light OFF");
+  });
+
+  server.on("/toggleMode", HTTP_GET, [](AsyncWebServerRequest *request){
+    mode = (mode == "Auto") ? "Manual" : "Auto";
+    request->send(200, "text/plain", "Mode changed to " + mode);
+  });
+
+  server.on("/status", HTTP_GET, [](AsyncWebServerRequest *request){
+    String json = "{";
+    json += "\"mode\":\"" + mode + "\",";
+    json += "\"light\":" + String(lightState ? "true" : "false") + ",";
+    json += "\"pwm\":" + String(pwmValue);
+    json += "}";
+    request->send(200, "application/json", json);
+  });
+
+  server.begin();
+}
+
+void loop() {
+  if (mode == "Auto") {
+    autoMode();
+  } else {
+    manualMode();
+  }
+}
